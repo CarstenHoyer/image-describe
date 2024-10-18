@@ -7,6 +7,7 @@ import sharp from "sharp";
 import OpenAI from "openai";
 import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
+import pLimit from "p-limit";
 
 // Initialize OpenAI client
 const client = new OpenAI({
@@ -79,7 +80,6 @@ async function describeImage(imagePath, triggerWord, userPrompt, systemPrompt) {
   }
 }
 
-// Function to process images
 async function processImages(
   inputDir,
   outputDir,
@@ -92,37 +92,46 @@ async function processImages(
     const files = await fs.readdir(inputDir);
     const imageFiles = files.filter((file) => /\.(jpg|jpeg|png)$/i.test(file));
 
-    for (const file of imageFiles) {
-      const filePath = path.join(inputDir, file); // Make sure this is the correct string path
-      const fileName = path.parse(file).name;
+    const systemPrompt = `You are a professional photographer who specializes in capturing images of ${triggerWord}. You have been hired to describe a series of images for a photography exhibition. Provide a detailed description of each image with the context of ${triggerWord}.`;
 
-      const systemPrompt = `You are a professional photographer who specializes in capturing images of ${triggerWord}. You have been hired to describe a series of images for a photography exhibition. Provide a detailed description of each image with the context of ${triggerWord}.`;
-      const userPrompt = await fs.readFile(userPromptFile, "utf-8");
+    // Read the user prompt from the specified file
+    const userPrompt = await fs.readFile(userPromptFile, "utf-8");
 
-      console.log({ systemPrompt, userPrompt, triggerWord });
-      // Generate the description for the image using OpenAI API
-      const description = await describeImage(
-        filePath,
-        triggerWord,
-        userPrompt,
-        systemPrompt
-      );
+    // Set the limit for concurrent processing (adjust based on your needs and API limits)
+    const limit = pLimit(10); // Change this number as needed to avoid rate limiting
 
-      const outputImagePath = path.join(outputDir, file);
-      const outputTextPath = path.join(outputDir, `${fileName}.txt`);
+    // Map over the image files and process them in parallel with concurrency limit
+    const processingPromises = imageFiles.map((file) =>
+      limit(async () => {
+        const filePath = path.join(inputDir, file);
+        const fileName = path.parse(file).name;
 
-      // Copy the image to the output directory
-      await fs.copy(filePath, outputImagePath);
-      // Write the description to a text file
-      await fs.writeFile(outputTextPath, description, "utf-8");
+        // Generate the description for the image using OpenAI API
+        const description = await describeImage(
+          filePath,
+          triggerWord,
+          userPrompt,
+          systemPrompt
+        );
 
-      console.log(
-        `Processed image: ${file} with description: "${description}"`
-      );
-    }
+        const outputImagePath = path.join(outputDir, file);
+        const outputTextPath = path.join(outputDir, `${fileName}.txt`);
 
+        // Copy the image to the output directory
+        await fs.copy(filePath, outputImagePath);
+        // Write the description to a text file
+        await fs.writeFile(outputTextPath, description, "utf-8");
+
+        console.log(
+          `Processed image: ${file} with description: "${description}"`
+        );
+      })
+    );
+
+    await Promise.all(processingPromises); // Wait for all processing to complete
     console.log("All images processed successfully.");
 
+    // Zip the output directory if the zip argument is true
     if (zip) {
       await zipOutputDirectory(outputDir);
     }
